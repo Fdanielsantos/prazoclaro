@@ -14,10 +14,12 @@ import {
   inserirIntimacoes,
   lerConfig,
   listarFeriadosLocais,
+  removerDadosDemo,
+  removerIntimacoesDJENSemPrazo,
   salvarConfig,
 } from '@/db/repo';
 import { intimacoesDemo } from '@/djen/demo';
-import { notificacaoTeste } from '@/notificacoes';
+import { cancelarAlertas, notificacaoTeste } from '@/notificacoes';
 import { formatBR, parseEntrada } from '@/prazos/datas';
 import type { FeriadoLocal } from '@/prazos/feriados';
 import { cores, esp } from '@/theme';
@@ -56,9 +58,33 @@ export default function Ajustes() {
   }
 
   async function salvarPerfil() {
-    if (!oab.replace(/\D/g, '') || uf.trim().length !== 2) return Alert.alert('Verifique OAB e UF');
-    await atualizar({ nome: nome.trim(), oab: oab.replace(/\D/g, ''), uf: uf.trim().toUpperCase() });
-    Alert.alert('Perfil salvo', 'As próximas buscas usarão estes dados.');
+    if (!cfg) return;
+    const novaOab = oab.replace(/\D/g, '');
+    const novaUf = uf.trim().toUpperCase();
+    if (!novaOab || novaUf.length !== 2) return Alert.alert('Verifique OAB e UF');
+
+    const trocouOab = novaOab !== cfg.oab || novaUf !== cfg.uf;
+    if (!trocouOab && !cfg.demo) {
+      await atualizar({ nome: nome.trim() });
+      return Alert.alert('Perfil salvo');
+    }
+
+    Alert.alert(
+      trocouOab ? `Usar a OAB ${novaOab}/${novaUf}?` : 'Sair do modo demonstração?',
+      'As intimações de exemplo e as importadas da OAB anterior serão removidas da lista (as que já viraram prazo são mantidas). Em seguida o app consulta o DJEN com estes dados.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Confirmar',
+          onPress: async () => {
+            await cancelarAlertas(await removerDadosDemo(db));
+            await removerIntimacoesDJENSemPrazo(db);
+            await atualizar({ nome: nome.trim(), oab: novaOab, uf: novaUf, demo: false, ultimaBusca: '' });
+            router.navigate('/intimacoes');
+          },
+        },
+      ],
+    );
   }
 
   async function addFeriado() {
@@ -72,8 +98,14 @@ export default function Ajustes() {
   }
 
   async function alternarDemo(v: boolean) {
-    await atualizar({ demo: v });
-    if (v) await inserirIntimacoes(db, intimacoesDemo());
+    if (v) {
+      await atualizar({ demo: true });
+      await inserirIntimacoes(db, intimacoesDemo());
+      return;
+    }
+    await cancelarAlertas(await removerDadosDemo(db));
+    await atualizar({ demo: false, ultimaBusca: '' });
+    Alert.alert('Modo demonstração desligado', 'As intimações de exemplo foram removidas. A próxima busca consulta o DJEN de verdade.');
   }
 
   function apagar() {

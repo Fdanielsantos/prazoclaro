@@ -20,9 +20,35 @@ export interface Intimacao {
   lida: number;
   origem: 'djen' | 'manual' | 'demo';
   prazo_id?: number | null;
+  tipo_documento?: string | null;
+  /** JSON: Destinatario[] */
+  destinatarios?: string | null;
+  /** JSON: AdvogadoIntimado[] */
+  advogados?: string | null;
+}
+
+export interface Destinatario {
+  nome: string;
+  /** "A" = polo ativo, "P" = polo passivo */
+  polo?: string;
+}
+
+export interface AdvogadoIntimado {
+  nome: string;
+  oab?: string;
+  uf?: string;
 }
 
 export type NovaIntimacao = Omit<Intimacao, 'id' | 'lida' | 'prazo_id'>;
+
+export function lerJSON<T>(v: string | null | undefined): T[] {
+  if (!v) return [];
+  try {
+    return JSON.parse(v) as T[];
+  } catch {
+    return [];
+  }
+}
 
 export interface Prazo {
   id: number;
@@ -95,11 +121,22 @@ export async function inserirIntimacoes(db: SQLiteDatabase, itens: NovaIntimacao
     for (const i of itens) {
       const r = await db.runAsync(
         `INSERT OR IGNORE INTO intimacoes
-          (djen_id, processo, tribunal, orgao, tipo, classe, texto, data_disponibilizacao, link, partes, origem)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (djen_id, processo, tribunal, orgao, tipo, classe, texto, data_disponibilizacao, link, partes, origem,
+           tipo_documento, destinatarios, advogados)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         i.djen_id, i.processo, i.tribunal, i.orgao, i.tipo, i.classe, i.texto,
         i.data_disponibilizacao, i.link, i.partes, i.origem,
+        i.tipo_documento ?? null, i.destinatarios ?? null, i.advogados ?? null,
       );
+      if (r.changes === 0 && i.djen_id) {
+        // Já existia: completa os campos novos de intimações importadas antes desta versão.
+        await db.runAsync(
+          `UPDATE intimacoes SET texto = ?, tipo_documento = COALESCE(tipo_documento, ?),
+             destinatarios = COALESCE(destinatarios, ?), advogados = COALESCE(advogados, ?)
+           WHERE djen_id = ?`,
+          i.texto, i.tipo_documento ?? null, i.destinatarios ?? null, i.advogados ?? null, i.djen_id,
+        );
+      }
       novas += r.changes;
     }
   });
@@ -143,6 +180,35 @@ export async function contarNaoLidas(db: SQLiteDatabase) {
 
 export function excluirIntimacao(db: SQLiteDatabase, id: number) {
   return db.runAsync('DELETE FROM intimacoes WHERE id = ?', id);
+}
+
+/**
+ * Remove as intimações de exemplo e os prazos criados a partir delas.
+ * Retorna os IDs de notificações agendadas desses prazos, para serem cancelados.
+ */
+export async function removerDadosDemo(db: SQLiteDatabase): Promise<string[]> {
+  const prazos = await db.getAllAsync<{ notif_ids: string }>(
+    `SELECT notif_ids FROM prazos WHERE intimacao_id IN (SELECT id FROM intimacoes WHERE origem = 'demo')`,
+  );
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(`DELETE FROM prazos WHERE intimacao_id IN (SELECT id FROM intimacoes WHERE origem = 'demo')`);
+    await db.runAsync(`DELETE FROM intimacoes WHERE origem = 'demo'`);
+  });
+  return prazos.flatMap((p) => {
+    try {
+      return JSON.parse(p.notif_ids) as string[];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Remove intimações importadas do DJEN que ainda não viraram prazo (ex.: ao trocar de OAB). */
+export async function removerIntimacoesDJENSemPrazo(db: SQLiteDatabase) {
+  const r = await db.runAsync(
+    `DELETE FROM intimacoes WHERE origem = 'djen' AND id NOT IN (SELECT intimacao_id FROM prazos WHERE intimacao_id IS NOT NULL)`,
+  );
+  return r.changes;
 }
 
 // ---------- Prazos ----------

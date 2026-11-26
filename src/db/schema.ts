@@ -50,4 +50,15 @@ export async function migrar(db: SQLiteDatabase) {
       anual INTEGER NOT NULL DEFAULT 0
     );
   `);
+
+  // Colunas adicionadas depois da primeira versão (bancos já existentes não as têm).
+  const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(intimacoes)');
+  const tem = new Set(cols.map((c) => c.name));
+  for (const [nome, tipo] of [
+    ['tipo_documento', 'TEXT'], // "Decisão", "Despacho", "Sentença"...
+    ['destinatarios', 'TEXT'], // JSON [{ nome, polo }]
+    ['advogados', 'TEXT'], // JSON [{ nome, oab, uf }]
+  ] as const) {
+    if (!tem.has(nome)) await db.execAsync(`ALTER TABLE intimacoes ADD COLUMN ${nome} ${tipo}`);
+  }
 }

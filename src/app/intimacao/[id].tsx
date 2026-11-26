@@ -4,17 +4,22 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { PartesIntimacao, PontosDeAtencao, TeorIntimacao } from '@/components/Teor';
 import { Badge, Botao, Campo, Card, Segmentado, Titulo } from '@/components/ui';
 import {
+  AdvogadoIntimado,
+  Destinatario,
   excluirIntimacao,
   inserirPrazo,
   Intimacao,
   lerConfig,
+  lerJSON,
   listarFeriadosLocais,
   marcarLida,
   obterIntimacao,
   salvarNotifIds,
 } from '@/db/repo';
+import { estruturarTeor, pontosDeAtencao } from '@/djen/formatar';
 import { agendarAlertas } from '@/notificacoes';
 import { calcularPrazo, Contagem } from '@/prazos/calculo';
 import { diaSemana, formatBR } from '@/prazos/datas';
@@ -28,7 +33,6 @@ export default function DetalheIntimacao() {
   const nav = useNavigation();
   const [i, setI] = useState<Intimacao | null>(null);
   const [locais, setLocais] = useState<FeriadoLocal[]>([]);
-  const [expandido, setExpandido] = useState(false);
 
   // formulário do prazo
   const [dias, setDias] = useState(15);
@@ -78,6 +82,11 @@ export default function DetalheIntimacao() {
     });
   }, [nav, db, id]);
 
+  const teor = useMemo(() => (i ? estruturarTeor(i.texto) : null), [i]);
+  const atencao = useMemo(() => (i ? pontosDeAtencao(i.texto) : []), [i]);
+  const destinatarios = useMemo(() => lerJSON<Destinatario>(i?.destinatarios), [i]);
+  const advogados = useMemo(() => lerJSON<AdvogadoIntimado>(i?.advogados), [i]);
+
   const calc = useMemo(
     () => (i && dias > 0 ? calcularPrazo(i.data_disponibilizacao, { dias, contagem, feriadosLocais: locais }) : null),
     [i, dias, contagem, locais],
@@ -105,7 +114,11 @@ export default function DetalheIntimacao() {
     }
   }
 
-  if (!i) return null;
+  if (!i || !teor) return null;
+
+  // tipoDocumento do STJ é uma frase inteira ("VISTA à(s) parte(s)..."): no selo, só os curtos.
+  const rotuloDoc = i.tipo_documento && i.tipo_documento.length <= 30 ? i.tipo_documento : i.tipo;
+  const temPartes = teor.cabecalho.length > 0 || destinatarios.length > 0 || advogados.length > 0 || !!i.partes;
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
@@ -113,30 +126,47 @@ export default function DetalheIntimacao() {
         <View style={{ gap: 6 }}>
           <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
             {i.tribunal && <Badge texto={i.tribunal} cor={cores.primaria} fundo={cores.primariaClara} />}
-            {i.tipo && <Badge texto={i.tipo} cor={cores.textoSec} fundo={cores.cinzaClaro} />}
+            {rotuloDoc && <Badge texto={rotuloDoc} cor={cores.textoSec} fundo={cores.cinzaClaro} />}
             {i.origem === 'demo' && <Badge texto="Exemplo" cor={cores.ambar} fundo={cores.ambarClaro} />}
           </View>
           <Text style={st.proc} selectable>
             {i.processo}
           </Text>
-          {i.classe && <Text style={st.sec}>{i.classe}</Text>}
-          {i.orgao && <Text style={st.sec}>{i.orgao}</Text>}
-          {i.partes && <Text style={st.sec}>Partes: {i.partes}</Text>}
-          <Text style={st.sec}>Disponibilizada no DJEN em {formatBR(i.data_disponibilizacao)}</Text>
+          {i.classe && <Text style={st.classe}>{i.classe}</Text>}
+          {i.orgao && (
+            <View style={st.meta}>
+              <Ionicons name="business-outline" size={15} color={cores.textoSec} />
+              <Text style={st.sec}>{i.orgao}</Text>
+            </View>
+          )}
+          <View style={st.meta}>
+            <Ionicons name="calendar-outline" size={15} color={cores.textoSec} />
+            <Text style={st.sec}>
+              Disponibilizada em {formatBR(i.data_disponibilizacao)} ({diaSemana(i.data_disponibilizacao)})
+            </Text>
+          </View>
         </View>
 
-        <Card style={{ gap: 8 }}>
-          <Titulo>Teor da intimação</Titulo>
-          <Text style={st.texto} selectable numberOfLines={expandido ? undefined : 8}>
-            {i.texto}
-          </Text>
-          {i.texto.length > 400 && (
-            <Botao titulo={expandido ? 'Mostrar menos' : 'Ler texto completo'} variante="texto" onPress={() => setExpandido(!expandido)} style={{ minHeight: 36, paddingVertical: 6 }} />
-          )}
+        <PontosDeAtencao frases={atencao} />
+
+        <Card style={{ gap: esp.m }}>
+          <TeorIntimacao titulo={teor.titulo} paragrafos={teor.paragrafos} />
           {i.link && (
             <Botao titulo="Abrir documento no tribunal" icone="open-outline" variante="secundario" onPress={() => Linking.openURL(i.link!)} />
           )}
         </Card>
+
+        {temPartes && (
+          <Card style={{ gap: esp.m }}>
+            <Titulo>Partes</Titulo>
+            <PartesIntimacao
+              destinatarios={destinatarios}
+              advogados={advogados}
+              cabecalho={teor.cabecalho}
+              partesTexto={i.partes}
+            />
+          </Card>
+        )}
 
         {i.prazo_id ? (
           <Card style={{ gap: 10, backgroundColor: cores.verdeClaro, borderColor: '#BBF7D0' }}>
@@ -228,8 +258,9 @@ function Linha({ rotulo, valor }: { rotulo: string; valor: string }) {
 
 const st = StyleSheet.create({
   proc: { fontSize: 20, fontWeight: '800', color: cores.texto },
-  sec: { fontSize: 14, color: cores.textoSec },
-  texto: { fontSize: 15, lineHeight: 22, color: cores.texto },
+  sec: { flex: 1, fontSize: 14, color: cores.textoSec, lineHeight: 19 },
+  classe: { fontSize: 15, fontWeight: '600', color: cores.texto },
+  meta: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   rot: { fontSize: 14, fontWeight: '600', color: cores.texto },
   sugestao: { flexDirection: 'row', gap: 8, backgroundColor: cores.primariaClara, padding: 10, borderRadius: 10 },
   sugTexto: { flex: 1, fontSize: 13, color: cores.primaria, lineHeight: 18 },

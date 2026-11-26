@@ -1,4 +1,4 @@
-import type { NovaIntimacao } from '@/db/repo';
+import type { AdvogadoIntimado, Destinatario, NovaIntimacao } from '@/db/repo';
 import { addDays, hojeISO } from '@/prazos/datas';
 
 const BASE = 'https://comunicaapi.pje.jus.br/api/v1/comunicacao';
@@ -14,7 +14,9 @@ interface ItemDJEN {
   numeroprocessocommascara?: string;
   link?: string;
   nomeClasse?: string;
+  tipoDocumento?: string;
   destinatarios?: { nome: string; polo?: string }[];
+  destinatarioadvogados?: { advogado?: { nome: string; numero_oab?: string; uf_oab?: string } }[];
 }
 
 const ACENTOS: Record<string, string> = { acute: '́', grave: '̀', circ: '̂', tilde: '̃', uml: '̈', cedil: '̧' };
@@ -31,15 +33,18 @@ function entidade(nome: string): string | null {
 
 /** Remove tags HTML e entidades, normalizando espaços. */
 export function limparTexto(html: string): string {
-  return html
+  // Em HTML, as quebras do código-fonte não são quebras do texto.
+  const ehHtml = /<(html|body|p|div|br|table|section)\b/i.test(html);
+  return (ehHtml ? html.replace(/<(head|style|script)[^>]*>[\s\S]*?<\/\1>/gi, ' ').replace(/[\r\n\t]+/g, ' ') : html)
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|tr)>/gi, '\n')
+    .replace(/<\/(p|div|li|tr|section|header|article|table|h[1-6])>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
     .replace(/&([a-zA-Z]+);/g, (orig, nome) => entidade(nome) ?? orig)
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n+/g, '\n\n')
+    .replace(/[ \t ]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{2,}/g, '\n')
     .trim();
 }
 
@@ -49,7 +54,17 @@ function capitalizar(s?: string) {
 }
 
 export function mapearItem(it: ItemDJEN): NovaIntimacao {
+  // O mesmo advogado costuma vir repetido (um registro por destinatário).
+  const advogados = new Map<string, AdvogadoIntimado>();
+  for (const d of it.destinatarioadvogados ?? []) {
+    const a = d.advogado;
+    if (a?.nome) advogados.set(`${a.numero_oab}/${a.uf_oab}/${a.nome}`, { nome: a.nome, oab: a.numero_oab, uf: a.uf_oab });
+  }
+  const destinatarios: Destinatario[] = (it.destinatarios ?? []).map((d) => ({ nome: d.nome, polo: d.polo }));
   return {
+    tipo_documento: it.tipoDocumento ?? null,
+    destinatarios: destinatarios.length ? JSON.stringify(destinatarios) : null,
+    advogados: advogados.size ? JSON.stringify([...advogados.values()]) : null,
     djen_id: String(it.id),
     processo: it.numeroprocessocommascara || it.numero_processo || 'Sem número',
     tribunal: it.siglaTribunal ?? null,
