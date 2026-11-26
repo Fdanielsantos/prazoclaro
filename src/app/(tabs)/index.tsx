@@ -7,8 +7,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PrazoCard, urgenciaDe } from '@/components/PrazoCard';
 import { Aviso, Botao, Card, Titulo, Vazio } from '@/components/ui';
-import { Config, contarNaoLidas, lerConfig, listarPrazos, Prazo } from '@/db/repo';
+import { Config, contarNaoLidas, lerConfig, listarPrazos, listarRevisoes, Prazo, RevisaoPrazo } from '@/db/repo';
 import { diaSemana, formatBR, hojeISO } from '@/prazos/datas';
+import { aplicarRevisao } from '@/revisao';
 import { cores, esp } from '@/theme';
 
 export default function Inicio() {
@@ -17,13 +18,20 @@ export default function Inicio() {
   const [prazos, setPrazos] = useState<Prazo[]>([]);
   const [naoLidas, setNaoLidas] = useState(0);
   const [atualizando, setAtualizando] = useState(false);
+  const [revisoes, setRevisoes] = useState<RevisaoPrazo[]>([]);
 
   const carregar = useCallback(async () => {
-    const [c, p, n] = await Promise.all([lerConfig(db), listarPrazos(db, 'pendente'), contarNaoLidas(db)]);
+    const [c, p, n, r] = await Promise.all([lerConfig(db), listarPrazos(db, 'pendente'), contarNaoLidas(db), listarRevisoes(db)]);
     setCfg(c);
     setPrazos(p);
     setNaoLidas(n);
+    setRevisoes(r);
   }, [db]);
+
+  async function aplicarTodas() {
+    for (const r of revisoes) await aplicarRevisao(db, r);
+    await carregar();
+  }
 
   useFocusEffect(
     useCallback(() => {
@@ -63,6 +71,25 @@ export default function Inicio() {
           <Resumo n={proximos} rotulo="Nos próximos 3 dias" cor={cores.ambar} fundo={cores.ambarClaro} icone="time" />
           <Resumo n={prazos.length} rotulo="Prazos em aberto" cor={cores.primaria} fundo={cores.primariaClara} icone="briefcase" />
         </View>
+
+        {revisoes.length > 0 && (
+          <Card style={st.revisao}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Ionicons name="sync-circle" size={22} color={cores.ambar} />
+              <Text style={st.revTitulo}>
+                {revisoes.length === 1 ? '1 prazo pode ter mudado' : `${revisoes.length} prazos podem ter mudado`}
+              </Text>
+            </View>
+            <Text style={st.revTexto}>O calendário ou os feriados mudaram. Toque em um prazo para revisar, ou aplique as novas datas.</Text>
+            {revisoes.slice(0, 5).map((r) => (
+              <Text key={r.prazo.id} style={st.revItem} onPress={() => router.push(`/prazo/${r.prazo.id}`)}>
+                • {r.prazo.descricao} ({r.prazo.processo}): {formatBR(r.prazo.data_fim)} →{' '}
+                <Text style={{ fontWeight: '800' }}>{formatBR(r.novo.dataFim)}</Text>
+              </Text>
+            ))}
+            <Botao titulo="Aplicar novas datas" icone="checkmark-done" onPress={aplicarTodas} />
+          </Card>
+        )}
 
         {naoLidas > 0 && (
           <Card onPress={() => router.push('/intimacoes')} style={st.alerta}>
@@ -120,4 +147,8 @@ const st = StyleSheet.create({
   alertaIcone: { width: 40, height: 40, borderRadius: 20, backgroundColor: cores.primaria, alignItems: 'center', justifyContent: 'center' },
   alertaTitulo: { fontSize: 16, fontWeight: '700', color: cores.primaria },
   alertaTexto: { fontSize: 13, color: cores.textoSec },
+  revisao: { gap: 8, backgroundColor: '#FFFBEB', borderColor: '#FDE68A' },
+  revTitulo: { fontSize: 16, fontWeight: '800', color: '#92400E' },
+  revTexto: { fontSize: 13, color: cores.textoSec, lineHeight: 18 },
+  revItem: { fontSize: 13, color: cores.texto, lineHeight: 19 },
 });

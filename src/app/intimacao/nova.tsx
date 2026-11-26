@@ -4,9 +4,9 @@ import { useState } from 'react';
 import { Alert, KeyboardAvoidingView, Platform, ScrollView, Text, View } from 'react-native';
 
 import { Aviso, Botao, Campo, Rotulo, Segmentado } from '@/components/ui';
-import { inserirIntimacao, listarFeriadosLocais } from '@/db/repo';
-import { addDays, formatBR, hojeISO, ISODate, parseEntrada } from '@/prazos/datas';
-import { infoDia } from '@/prazos/feriados';
+import { contextoCalendario, inserirIntimacao } from '@/db/repo';
+import { utilAnterior } from '@/prazos/calculo';
+import { formatBR, hojeISO, ISODate, parseEntrada } from '@/prazos/datas';
 import { cores, esp } from '@/theme';
 
 export default function NovaIntimacao() {
@@ -14,7 +14,7 @@ export default function NovaIntimacao() {
   const [processo, setProcesso] = useState('');
   const [tribunal, setTribunal] = useState('');
   const [data, setData] = useState(formatBR(hojeISO()));
-  const [tipoData, setTipoData] = useState<'disp' | 'pub'>('disp');
+  const [tipoData, setTipoData] = useState<'disp' | 'pub' | 'inicio'>('disp');
   const [texto, setTexto] = useState('');
   const [salvando, setSalvando] = useState(false);
 
@@ -24,13 +24,12 @@ export default function NovaIntimacao() {
     if (!iso) return Alert.alert('Data inválida', 'Use o formato dd/mm/aaaa.');
     if (texto.trim().length < 10) return Alert.alert('Cole o texto da intimação');
     setSalvando(true);
+    // O cálculo parte sempre da disponibilização: convertemos as outras datas para ela,
+    // voltando dias úteis com o calendário do tribunal informado.
+    const ctx = await contextoCalendario(db, tribunal.trim().toUpperCase() || null);
     let disp: ISODate = iso;
-    if (tipoData === 'pub') {
-      // Converte a data de publicação na data de disponibilização equivalente (dia útil anterior).
-      const locais = await listarFeriadosLocais(db);
-      disp = addDays(iso, -1);
-      while (!infoDia(disp, locais).util) disp = addDays(disp, -1);
-    }
+    if (tipoData === 'pub') disp = utilAnterior(iso, ctx);
+    if (tipoData === 'inicio') disp = utilAnterior(utilAnterior(iso, ctx), ctx);
     const id = await inserirIntimacao(db, {
       djen_id: null,
       processo: processo.trim(),
@@ -62,6 +61,7 @@ export default function NovaIntimacao() {
             opcoes={[
               { valor: 'disp', rotulo: 'Disponibilização' },
               { valor: 'pub', rotulo: 'Publicação' },
+              { valor: 'inicio', rotulo: 'Início do prazo' },
             ]}
             valor={tipoData}
             onChange={setTipoData}
@@ -76,7 +76,7 @@ export default function NovaIntimacao() {
           placeholder="Cole aqui o teor da decisão/despacho…"
           style={{ minHeight: 180, textAlignVertical: 'top' }}
         />
-        <Aviso texto="No DJEN, a publicação considera-se feita no 1º dia útil após a disponibilização, e o prazo começa no dia útil seguinte." />
+        <Aviso texto="No DJEN, a publicação considera-se feita no 1º dia útil após a disponibilização, e o prazo começa no dia útil seguinte (CPC, art. 224, §§ 2º e 3º). Se a intimação veio pelo sistema do tribunal, informe a data de início do prazo." />
         <Botao titulo="Continuar" icone="arrow-forward" onPress={salvar} carregando={salvando} />
       </ScrollView>
     </KeyboardAvoidingView>

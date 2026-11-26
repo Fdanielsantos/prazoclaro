@@ -6,40 +6,41 @@ import { Alert, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 
 import { textoContagem, urgenciaDe } from '@/components/PrazoCard';
 import { Aviso, Botao, Card, Titulo } from '@/components/ui';
+import { exportarParaAgenda } from '@/agenda';
 import {
   atualizarStatusPrazo,
+  contextoCalendario,
   diasPuladosDe,
   excluirPrazo,
+  ignorarRevisao,
   lerConfig,
-  listarFeriadosLocais,
+  lerJSON,
+  listarRevisoes,
   obterPrazo,
   Prazo,
+  RevisaoPrazo,
   salvarNotifIds,
 } from '@/db/repo';
 import { agendarAlertas, cancelarAlertas } from '@/notificacoes';
 import { diasUteisRestantes } from '@/prazos/calculo';
 import { diaSemana, formatBR, hojeISO } from '@/prazos/datas';
-import { relatorioCliente } from '@/relatorio';
+import { agruparDiasNaoUteis, relatorioCliente, textoTempestividade } from '@/relatorio';
+import { aplicarRevisao } from '@/revisao';
 import { cores, corUrgencia, esp } from '@/theme';
-
-const MOTIVO_ICONE: Record<string, any> = {
-  sabado: 'calendar-clear-outline',
-  domingo: 'calendar-clear-outline',
-  feriado: 'flag-outline',
-  feriado_local: 'location-outline',
-  recesso: 'snow-outline',
-};
 
 export default function DetalhePrazo() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const db = useSQLiteContext();
   const [p, setP] = useState<Prazo | null>(null);
   const [uteis, setUteis] = useState<number | null>(null);
+  const [revisao, setRevisao] = useState<RevisaoPrazo | null>(null);
 
   const carregar = useCallback(async () => {
     const pr = await obterPrazo(db, Number(id));
     setP(pr);
-    if (pr) setUteis(diasUteisRestantes(hojeISO(), pr.data_fim, await listarFeriadosLocais(db)));
+    if (!pr) return;
+    setUteis(diasUteisRestantes(hojeISO(), pr.data_fim, await contextoCalendario(db, pr.tribunal)));
+    setRevisao(pr.status === 'pendente' ? ((await listarRevisoes(db)).find((r) => r.prazo.id === pr.id) ?? null) : null);
   }, [db, id]);
 
   useFocusEffect(
@@ -53,8 +54,9 @@ export default function DetalhePrazo() {
   const c = corUrgencia(u);
   const pulados = diasPuladosDe(p);
   const fds = pulados.filter((d) => d.motivo === 'sabado' || d.motivo === 'domingo').length;
-  const especiais = pulados.filter((d) => d.motivo !== 'sabado' && d.motivo !== 'domingo');
-  const notifs: string[] = JSON.parse(p.notif_ids || '[]');
+  const especiais = agruparDiasNaoUteis(pulados);
+  const avisos = lerJSON<string>(p.avisos);
+  const notifs = lerJSON<string>(p.notif_ids);
 
   async function alternarStatus() {
     if (!p) return;
@@ -75,6 +77,30 @@ export default function DetalhePrazo() {
     if (!p) return;
     const cfg = await lerConfig(db);
     await Share.share({ message: relatorioCliente(p, cfg.nome) });
+  }
+
+  async function agenda() {
+    if (!p) return;
+    const cfg = await lerConfig(db);
+    const ok = await exportarParaAgenda(p, cfg.antecedencia);
+    if (!ok) Alert.alert('Indisponível', 'O compartilhamento de arquivos não está disponível neste aparelho.');
+  }
+
+  async function tempestividade() {
+    if (!p) return;
+    await Share.share({ message: textoTempestividade(p) });
+  }
+
+  async function aplicar() {
+    if (!revisao) return;
+    await aplicarRevisao(db, revisao);
+    carregar();
+  }
+
+  async function manter() {
+    if (!revisao) return;
+    await ignorarRevisao(db, revisao);
+    setRevisao(null);
   }
 
   function excluir() {
@@ -105,6 +131,28 @@ export default function DetalhePrazo() {
         <Text style={[st.heroDia, { color: c.fg }]}>{diaSemana(p.data_fim)}</Text>
       </View>
 
+      {revisao && (
+        <Card style={st.revisao}>
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+            <Ionicons name="sync-circle" size={22} color={cores.ambar} />
+            <Text style={st.revTitulo}>O calendário mudou</Text>
+          </View>
+          <Text style={st.revTexto}>
+            Recalculado com o calendário atual, o vencimento passa de {formatBR(p.data_fim)} para{' '}
+            <Text style={{ fontWeight: '800' }}>{formatBR(revisao.novo.dataFim)}</Text> ({diaSemana(revisao.novo.dataFim)}).
+          </Text>
+          {revisao.motivos.map((m) => (
+            <Text key={m} style={st.revMotivo}>
+              {m}
+            </Text>
+          ))}
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Botao titulo="Aplicar nova data" onPress={aplicar} style={{ flex: 1 }} />
+            <Botao titulo="Manter" variante="secundario" onPress={manter} style={{ flex: 1 }} />
+          </View>
+        </Card>
+      )}
+
       <View style={{ gap: 4 }}>
         <Text style={st.desc}>{p.descricao}</Text>
         <Text style={st.sec}>
@@ -130,17 +178,20 @@ export default function DetalhePrazo() {
         {(fds > 0 || especiais.length > 0) && (
           <View style={st.pulados}>
             <Text style={st.pulTitulo}>Dias desconsiderados</Text>
-            {fds > 0 && <Text style={st.pulItem}>• {fds} dia(s) de fim de semana</Text>}
-            {especiais.map((d) => (
-              <View key={d.data} style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-                <Ionicons name={MOTIVO_ICONE[d.motivo]} size={14} color={cores.textoSec} />
-                <Text style={st.pulItem}>
-                  {formatBR(d.data)} · {d.descricao}
-                </Text>
-              </View>
+            {fds > 0 && <Text style={st.pulItem}>• {fds} dia(s) de sábado ou domingo (CPC, art. 216)</Text>}
+            {especiais.map((l) => (
+              <Text key={l} style={st.pulItem}>
+                • {l}
+              </Text>
             ))}
           </View>
         )}
+        {avisos.map((a) => (
+          <View key={a} style={st.aviso}>
+            <Ionicons name="warning-outline" size={15} color="#92400E" />
+            <Text style={st.avisoTxt}>{a}</Text>
+          </View>
+        ))}
       </Card>
 
       <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -155,6 +206,10 @@ export default function DetalhePrazo() {
       </Card>
 
       <Botao titulo="Enviar relatório ao cliente" icone="logo-whatsapp" onPress={compartilhar} />
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <Botao titulo="Agenda" icone="calendar-outline" variante="secundario" onPress={agenda} style={{ flex: 1 }} />
+        <Botao titulo="Tempestividade" icone="document-text-outline" variante="secundario" onPress={tempestividade} style={{ flex: 1 }} />
+      </View>
       <Botao
         titulo={p.status === 'pendente' ? 'Marcar como cumprido' : 'Reabrir prazo'}
         icone={p.status === 'pendente' ? 'checkmark-circle-outline' : 'refresh'}
@@ -165,7 +220,7 @@ export default function DetalhePrazo() {
         <Botao titulo="Ver intimação" icone="document-text-outline" variante="texto" onPress={() => router.push(`/intimacao/${p.intimacao_id}`)} />
       )}
       <Botao titulo="Excluir prazo" icone="trash-outline" variante="perigo" onPress={excluir} />
-      <Aviso texto="Confira sempre a contagem: suspensões específicas do tribunal (ex.: indisponibilidade do sistema, portarias) não são consideradas automaticamente." />
+      <Aviso texto="Confira sempre a contagem: suspensões por portaria ou indisponibilidade do sistema só entram se estiverem no calendário do app ou cadastradas nos Ajustes." />
     </ScrollView>
   );
 }
@@ -203,5 +258,11 @@ const st = StyleSheet.create({
   etData: { fontSize: 13, color: cores.textoSec },
   pulados: { marginTop: 12, backgroundColor: cores.fundo, borderRadius: 12, padding: 12, gap: 4 },
   pulTitulo: { fontSize: 13, fontWeight: '700', color: cores.texto, marginBottom: 2 },
-  pulItem: { fontSize: 13, color: cores.textoSec },
+  pulItem: { fontSize: 13, color: cores.textoSec, lineHeight: 18 },
+  aviso: { flexDirection: 'row', gap: 6, marginTop: 10, backgroundColor: cores.ambarClaro, borderRadius: 10, padding: 10 },
+  avisoTxt: { flex: 1, fontSize: 12, color: '#92400E', lineHeight: 17 },
+  revisao: { gap: 8, backgroundColor: '#FFFBEB', borderColor: '#FDE68A' },
+  revTitulo: { fontSize: 16, fontWeight: '800', color: '#92400E' },
+  revTexto: { fontSize: 14, color: cores.texto, lineHeight: 20 },
+  revMotivo: { fontSize: 12, color: cores.textoSec },
 });

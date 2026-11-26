@@ -2,29 +2,14 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { FormPrazo } from '@/components/FormPrazo';
 import { PartesIntimacao, PontosDeAtencao, TeorIntimacao } from '@/components/Teor';
-import { Badge, Botao, Campo, Card, Segmentado, Titulo } from '@/components/ui';
-import {
-  AdvogadoIntimado,
-  Destinatario,
-  excluirIntimacao,
-  inserirPrazo,
-  Intimacao,
-  lerConfig,
-  lerJSON,
-  listarFeriadosLocais,
-  marcarLida,
-  obterIntimacao,
-  salvarNotifIds,
-} from '@/db/repo';
+import { Badge, Botao, Card, Titulo } from '@/components/ui';
+import { AdvogadoIntimado, Destinatario, excluirIntimacao, Intimacao, lerJSON, marcarLida, obterIntimacao } from '@/db/repo';
 import { estruturarTeor, pontosDeAtencao } from '@/djen/formatar';
-import { agendarAlertas } from '@/notificacoes';
-import { calcularPrazo, Contagem } from '@/prazos/calculo';
 import { diaSemana, formatBR } from '@/prazos/datas';
-import type { FeriadoLocal } from '@/prazos/feriados';
-import { sugerirDescricao, sugerirPrazo } from '@/prazos/sugestao';
 import { cores, esp } from '@/theme';
 
 export default function DetalheIntimacao() {
@@ -32,29 +17,13 @@ export default function DetalheIntimacao() {
   const db = useSQLiteContext();
   const nav = useNavigation();
   const [i, setI] = useState<Intimacao | null>(null);
-  const [locais, setLocais] = useState<FeriadoLocal[]>([]);
-
-  // formulário do prazo
-  const [dias, setDias] = useState(15);
-  const [contagem, setContagem] = useState<Contagem>('uteis');
-  const [descricao, setDescricao] = useState('');
-  const [cliente, setCliente] = useState('');
-  const [trecho, setTrecho] = useState<string | undefined>();
-  const [salvando, setSalvando] = useState(false);
 
   useEffect(() => {
     (async () => {
       const it = await obterIntimacao(db, Number(id));
       if (!it) return;
       setI(it);
-      setLocais(await listarFeriadosLocais(db));
       if (!it.lida) await marcarLida(db, it.id);
-      const sug = sugerirPrazo(it.texto);
-      setDias(sug.dias);
-      setContagem(sug.contagem);
-      setTrecho(sug.trecho);
-      setDescricao(sugerirDescricao(it.texto));
-      setCliente(it.partes?.split(',')[0]?.trim() ?? '');
     })();
   }, [db, id]);
 
@@ -86,33 +55,11 @@ export default function DetalheIntimacao() {
   const atencao = useMemo(() => (i ? pontosDeAtencao(i.texto) : []), [i]);
   const destinatarios = useMemo(() => lerJSON<Destinatario>(i?.destinatarios), [i]);
   const advogados = useMemo(() => lerJSON<AdvogadoIntimado>(i?.advogados), [i]);
-
-  const calc = useMemo(
-    () => (i && dias > 0 ? calcularPrazo(i.data_disponibilizacao, { dias, contagem, feriadosLocais: locais }) : null),
-    [i, dias, contagem, locais],
+  // Nomes das partes (para detectar prazo em dobro): cabeçalho do texto + destinatários da API.
+  const nomesPartes = useMemo(
+    () => [...(teor?.cabecalho.filter((c) => !/advogad|procurador|relator/i.test(c.rotulo)).map((c) => c.valor) ?? []), ...destinatarios.map((d) => d.nome), i?.partes ?? ''],
+    [teor, destinatarios, i],
   );
-
-  async function salvar() {
-    if (!i || !calc) return;
-    if (!descricao.trim()) return Alert.alert('Descreva a providência', 'Ex.: Réplica à contestação.');
-    setSalvando(true);
-    try {
-      const cfg = await lerConfig(db);
-      const pid = await inserirPrazo(
-        db,
-        { intimacao_id: i.id, processo: i.processo, descricao: descricao.trim(), cliente: cliente.trim() || null },
-        calc,
-      );
-      const ids = await agendarAlertas(
-        { id: pid, processo: i.processo, descricao: descricao.trim(), data_fim: calc.dataFim },
-        { hora: cfg.horaAlerta, antecedencia: cfg.antecedencia },
-      );
-      await salvarNotifIds(db, pid, ids);
-      router.replace(`/prazo/${pid}`);
-    } finally {
-      setSalvando(false);
-    }
-  }
 
   if (!i || !teor) return null;
 
@@ -159,12 +106,7 @@ export default function DetalheIntimacao() {
         {temPartes && (
           <Card style={{ gap: esp.m }}>
             <Titulo>Partes</Titulo>
-            <PartesIntimacao
-              destinatarios={destinatarios}
-              advogados={advogados}
-              cabecalho={teor.cabecalho}
-              partesTexto={i.partes}
-            />
+            <PartesIntimacao destinatarios={destinatarios} advogados={advogados} cabecalho={teor.cabecalho} partesTexto={i.partes} />
           </Card>
         )}
 
@@ -174,85 +116,10 @@ export default function DetalheIntimacao() {
             <Botao titulo="Ver prazo" icone="calendar" onPress={() => router.push(`/prazo/${i.prazo_id}`)} />
           </Card>
         ) : (
-          <Card style={{ gap: esp.m }}>
-            <Titulo>Criar prazo</Titulo>
-            {trecho ? (
-              <View style={st.sugestao}>
-                <Ionicons name="sparkles" size={16} color={cores.primaria} />
-                <Text style={st.sugTexto}>
-                  Identificamos no texto: <Text style={{ fontStyle: 'italic' }}>{trecho}</Text>
-                </Text>
-              </View>
-            ) : (
-              <View style={st.sugestao}>
-                <Ionicons name="information-circle" size={16} color={cores.primaria} />
-                <Text style={st.sugTexto}>Prazo não identificado no texto; sugerimos o prazo geral de 15 dias úteis. Ajuste se necessário.</Text>
-              </View>
-            )}
-
-            <Campo rotulo="Providência" value={descricao} onChangeText={setDescricao} placeholder="Ex.: Réplica à contestação" />
-            <Campo rotulo="Cliente (para o relatório)" value={cliente} onChangeText={setCliente} placeholder="Nome do cliente" />
-
-            <View style={{ gap: 6 }}>
-              <Text style={st.rot}>Prazo</Text>
-              <View style={st.stepper}>
-                <Pressable style={st.stepBtn} onPress={() => setDias((d) => Math.max(1, d - 1))}>
-                  <Ionicons name="remove" size={22} color={cores.primaria} />
-                </Pressable>
-                <TextInput
-                  value={String(dias)}
-                  onChangeText={(t) => setDias(Math.min(365, Number(t.replace(/\D/g, '')) || 0))}
-                  keyboardType="number-pad"
-                  style={st.stepInput}
-                />
-                <Text style={st.stepDias}>dias</Text>
-                <Pressable style={st.stepBtn} onPress={() => setDias((d) => Math.min(365, d + 1))}>
-                  <Ionicons name="add" size={22} color={cores.primaria} />
-                </Pressable>
-              </View>
-              <Segmentado
-                opcoes={[
-                  { valor: 'uteis', rotulo: 'Dias úteis (CPC)' },
-                  { valor: 'corridos', rotulo: 'Dias corridos' },
-                ]}
-                valor={contagem}
-                onChange={setContagem}
-              />
-            </View>
-
-            {calc && (
-              <View style={st.resultado}>
-                <Linha rotulo="Publicação" valor={formatBR(calc.dataPublicacao)} />
-                <Linha rotulo="Início da contagem" valor={formatBR(calc.dataInicio)} />
-                <View style={st.divisor} />
-                <Text style={st.vencRot}>Vencimento</Text>
-                <Text style={st.venc}>
-                  {formatBR(calc.dataFim)} <Text style={st.vencDia}>({diaSemana(calc.dataFim)})</Text>
-                </Text>
-                {calc.diasPulados.length > 0 && (
-                  <Text style={st.pulados}>
-                    {calc.diasPulados.length} dia(s) não útil(eis) desconsiderado(s)
-                    {calc.diasPulados.some((d) => d.motivo === 'recesso') ? ', incluindo o recesso forense' : ''}
-                    {calc.diasPulados.some((d) => d.motivo === 'feriado' || d.motivo === 'feriado_local') ? ' e feriados' : ''}.
-                  </Text>
-                )}
-              </View>
-            )}
-
-            <Botao titulo="Salvar prazo e ativar alertas" icone="notifications" onPress={salvar} carregando={salvando} desabilitado={!calc} />
-          </Card>
+          <FormPrazo intimacao={i} nomesPartes={nomesPartes} />
         )}
       </ScrollView>
     </KeyboardAvoidingView>
-  );
-}
-
-function Linha({ rotulo, valor }: { rotulo: string; valor: string }) {
-  return (
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-      <Text style={{ color: cores.textoSec, fontSize: 14 }}>{rotulo}</Text>
-      <Text style={{ color: cores.texto, fontSize: 14, fontWeight: '600' }}>{valor}</Text>
-    </View>
   );
 }
 
@@ -261,17 +128,4 @@ const st = StyleSheet.create({
   sec: { flex: 1, fontSize: 14, color: cores.textoSec, lineHeight: 19 },
   classe: { fontSize: 15, fontWeight: '600', color: cores.texto },
   meta: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
-  rot: { fontSize: 14, fontWeight: '600', color: cores.texto },
-  sugestao: { flexDirection: 'row', gap: 8, backgroundColor: cores.primariaClara, padding: 10, borderRadius: 10 },
-  sugTexto: { flex: 1, fontSize: 13, color: cores.primaria, lineHeight: 18 },
-  stepper: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 6 },
-  stepBtn: { width: 44, height: 44, borderRadius: 12, backgroundColor: cores.primariaClara, alignItems: 'center', justifyContent: 'center' },
-  stepInput: { fontSize: 28, fontWeight: '800', color: cores.texto, minWidth: 56, textAlign: 'center' },
-  stepDias: { fontSize: 16, color: cores.textoSec, flex: 1 },
-  resultado: { backgroundColor: cores.fundo, borderRadius: 14, padding: 14, gap: 6 },
-  divisor: { height: 1, backgroundColor: cores.borda, marginVertical: 4 },
-  vencRot: { fontSize: 13, color: cores.textoSec, fontWeight: '600' },
-  venc: { fontSize: 26, fontWeight: '800', color: cores.primaria },
-  vencDia: { fontSize: 16, fontWeight: '600', color: cores.textoSec },
-  pulados: { fontSize: 12, color: cores.textoSec },
 });

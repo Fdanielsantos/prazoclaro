@@ -61,4 +61,12 @@ export async function migrar(db: SQLiteDatabase) {
   ] as const) {
     if (!tem.has(nome)) await db.execAsync(`ALTER TABLE intimacoes ADD COLUMN ${nome} ${tipo}`);
   }
+
+  const colsPrazo = new Set((await db.getAllAsync<{ name: string }>('PRAGMA table_info(prazos)')).map((c) => c.name));
+  for (const [nome, tipo] of [
+    ['avisos', "TEXT NOT NULL DEFAULT '[]'"], // JSON string[] com avisos do cálculo
+    ['tribunal_calc', 'TEXT'], // tribunal usado no cálculo (sobrevive à exclusão da intimação)
+  ] as const) {
+    if (!colsPrazo.has(nome)) await db.execAsync(`ALTER TABLE prazos ADD COLUMN ${nome} ${tipo}`);
+  }
 }

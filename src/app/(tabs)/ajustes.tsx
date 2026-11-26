@@ -9,6 +9,7 @@ import { Aviso, Botao, Campo, Card, Chips, Rotulo, Titulo } from '@/components/u
 import {
   apagarTudo,
   Config,
+  contarDadosDoPerfil,
   excluirFeriadoLocal,
   inserirFeriadoLocal,
   inserirIntimacoes,
@@ -16,12 +17,14 @@ import {
   listarFeriadosLocais,
   removerDadosDemo,
   removerIntimacoesDJENSemPrazo,
+  removerPerfil,
   salvarConfig,
 } from '@/db/repo';
 import { intimacoesDemo } from '@/djen/demo';
 import { cancelarAlertas, notificacaoTeste } from '@/notificacoes';
 import { formatBR, parseEntrada } from '@/prazos/datas';
 import type { FeriadoLocal } from '@/prazos/feriados';
+import { atualizarCalendario, coberturaCalendario, urlCalendario } from '@/revisao';
 import { cores, esp } from '@/theme';
 
 type FeriadoRow = FeriadoLocal & { id: number };
@@ -36,6 +39,7 @@ export default function Ajustes() {
   const [fData, setFData] = useState('');
   const [fDesc, setFDesc] = useState('');
   const [fAnual, setFAnual] = useState(true);
+  const [baixando, setBaixando] = useState(false);
 
   const carregar = useCallback(async () => {
     const c = await lerConfig(db);
@@ -87,6 +91,43 @@ export default function Ajustes() {
     );
   }
 
+  async function trocarPerfil() {
+    const { intimacoes, prazos } = await contarDadosDoPerfil(db);
+    const itens = [
+      intimacoes > 0 && `${intimacoes} intimaç${intimacoes === 1 ? 'ão importada' : 'ões importadas'}`,
+      prazos > 0 && `${prazos} prazo${prazos === 1 ? '' : 's'} criado${prazos === 1 ? '' : 's'} a partir dela${intimacoes === 1 ? '' : 's'} (e seus alertas)`,
+    ].filter(Boolean);
+    Alert.alert(
+      'Trocar de perfil?',
+      `O nome e a OAB ${cfg?.oab ? `${cfg.oab}/${cfg.uf} ` : ''}serão removidos` +
+        (itens.length ? `, junto com ${itens.join(' e ')}` : '') +
+        '.\n\nFeriados locais, preferências de alerta e intimações cadastradas manualmente são mantidos. Em seguida você poderá cadastrar outra OAB.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Trocar de perfil',
+          style: 'destructive',
+          onPress: async () => {
+            await cancelarAlertas(await removerPerfil(db));
+            router.replace('/onboarding');
+          },
+        },
+      ],
+    );
+  }
+
+  async function baixarCalendario() {
+    setBaixando(true);
+    const r = await atualizarCalendario(db);
+    setBaixando(false);
+    if (!r.ok) return Alert.alert('Não foi possível atualizar', r.erro);
+    await carregar();
+    Alert.alert(
+      r.novo ? 'Calendário atualizado' : 'Calendário em dia',
+      r.novo ? `Versão ${r.versao} instalada. Prazos salvos que mudarem aparecem na tela Início.` : `Você já tem a versão ${r.versao}.`,
+    );
+  }
+
   async function addFeriado() {
     const iso = parseEntrada(fData);
     if (!iso) return Alert.alert('Data inválida', 'Use o formato dd/mm/aaaa.');
@@ -124,6 +165,7 @@ export default function Ajustes() {
   }
 
   if (!cfg) return null;
+  const cobertura = coberturaCalendario(cfg.calendarioRemoto);
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
@@ -140,6 +182,7 @@ export default function Ajustes() {
             </View>
           </View>
           <Botao titulo="Salvar perfil" variante="secundario" onPress={salvarPerfil} />
+          <Botao titulo="Trocar de perfil" icone="swap-horizontal" variante="texto" onPress={trocarPerfil} />
         </Card>
 
         <Titulo>Alertas</Titulo>
@@ -160,11 +203,48 @@ export default function Ajustes() {
           />
         </Card>
 
+        <Titulo>Calendário forense</Titulo>
+        <Card style={{ gap: esp.m }}>
+          <Text style={st.ajuda}>
+            Sempre considerados: sábados, domingos, feriados nacionais em lei e o recesso de 20/12 a 20/01 (CPC, art. 220). Além
+            disso, o app aplica o calendário próprio destes tribunais:
+          </Text>
+          <View style={st.siglas}>
+            {cobertura.siglas.map((s) => (
+              <Text key={s} style={st.sigla}>
+                {s}
+              </Text>
+            ))}
+          </View>
+          <Text style={st.ajudaPeq}>
+            Calendário v{cobertura.versao} · atualizado em {formatBR(cobertura.atualizadoEm)}. Para os demais tribunais, cadastre abaixo
+            os feriados e suspensões.
+          </Text>
+          {urlCalendario() && (
+            <Botao titulo="Atualizar calendário" icone="cloud-download-outline" variante="secundario" onPress={baixarCalendario} carregando={baixando} />
+          )}
+          <View style={st.linha}>
+            <View style={{ flex: 1 }}>
+              <Text style={st.linhaTexto}>Carnaval, Sexta-feira Santa e Corpus Christi</Text>
+              <Text style={st.ajuda}>
+                Não são feriados nacionais em lei. Ative se o seu tribunal suspende o expediente nesses dias. Desativado, o vencimento
+                é calculado mais cedo, que é o lado seguro. (Na Justiça Federal, STF e STJ o Carnaval e a Semana Santa já são
+                considerados por lei.)
+              </Text>
+            </View>
+            <Switch
+              value={cfg.feriadosTradicionais}
+              onValueChange={(v) => atualizar({ feriadosTradicionais: v })}
+              trackColor={{ true: cores.primaria }}
+            />
+          </View>
+        </Card>
+
         <Titulo>Feriados locais</Titulo>
         <Card style={{ gap: esp.m }}>
           <Text style={st.ajuda}>
-            Feriados nacionais, Carnaval, Sexta-feira Santa, Corpus Christi e o recesso (20/12 a 20/01) já são considerados. Cadastre
-            aqui os feriados do seu estado, município ou tribunal.
+            Cadastre os feriados do seu estado, município ou tribunal e as suspensões de expediente por portaria. Prazos já salvos
+            que mudarem de vencimento serão indicados na tela Início para você revisar.
           </Text>
           {feriados.map((f) => (
             <View key={f.id} style={st.feriado}>
@@ -218,6 +298,9 @@ export default function Ajustes() {
 
 const st = StyleSheet.create({
   ajuda: { fontSize: 13, color: cores.textoSec, lineHeight: 18 },
+  ajudaPeq: { fontSize: 12, color: cores.textoSec, lineHeight: 17 },
+  siglas: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  sigla: { fontSize: 12, fontWeight: '700', color: cores.primaria, backgroundColor: cores.primariaClara, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, overflow: 'hidden' },
   feriado: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: cores.borda },
   fDesc: { fontSize: 15, fontWeight: '600', color: cores.texto },
   fData: { fontSize: 13, color: cores.textoSec },

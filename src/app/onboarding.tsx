@@ -32,7 +32,8 @@ export default function Onboarding() {
     if (!oab.replace(/\D/g, '')) return Alert.alert('Informe sua OAB', 'Digite o número da sua inscrição na OAB.');
     if (!UFS.includes(ufN)) return Alert.alert('UF inválida', 'Informe a sigla do estado da OAB, ex.: SP.');
     setSalvando(true);
-    await salvarConfig(db, { nome: nome.trim(), oab: oab.replace(/\D/g, ''), uf: ufN, demo: false, onboarded: true });
+    // ultimaBusca vazia faz a aba Intimações consultar o DJEN assim que abrir.
+    await salvarConfig(db, { nome: nome.trim(), oab: oab.replace(/\D/g, ''), uf: ufN, demo: false, onboarded: true, ultimaBusca: '' });
     await pedirPermissao();
     router.replace('/intimacoes');
   }
